@@ -10,7 +10,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DIFY_ORIGIN = os.getenv("DIFY_ORIGIN", "http://localhost")
+DIFY_ORIGIN = os.getenv("DIFY_ORIGIN", "http://localhost").rstrip("/")
 BASE_URL = f"{DIFY_ORIGIN}/console/api"
 EMAIL = os.getenv("EMAIL")
 PASSWORD = os.getenv("PASSWORD")
@@ -18,6 +18,9 @@ logger.info(f"Using Dify API at {BASE_URL} with email {EMAIL}")
 
 MAX_CONCURRENT_TASKS = 3
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
+
+# Global variable to store CSRF token from login
+_csrf_token: str | None = None
 
 
 async def execute_api(
@@ -32,9 +35,9 @@ async def execute_api(
     """
     Execute an API request with retries and optional authorization.
 
-    :param client: An instance of httpx.AsyncClient
+    :param client: An instance of httpx.AsyncClient (cookies are automatically included)
     :param url: Target API endpoint URL
-    :param access_token: Bearer token for authentication (optional)
+    :param access_token: Bearer token for authentication (optional, cookies used if None)
     :param params: Query parameters to include in the request (for GET)
     :param payload: Request payload to send (for POST)
     :param method_type: HTTP method (currently supports only 'POST')
@@ -42,7 +45,12 @@ async def execute_api(
     :return: Response body as a dictionary
     :raises Exception: If all retry attempts fail
     """
-    headers = {"Authorization": f"Bearer {access_token}"} if access_token else None
+    headers = {}
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+    # Add CSRF token if available (some APIs require it)
+    if _csrf_token:
+        headers["X-CSRF-Token"] = _csrf_token
     async with semaphore:
         for attempt in range(retries):
             match method_type:
@@ -66,28 +74,85 @@ async def execute_api(
     raise Exception(f"API call failed after {retries} attempts: {url}")
 
 
-async def login_and_get_token(client: httpx.AsyncClient) -> str:
+async def login_and_get_token(client: httpx.AsyncClient) -> str | None:
     """
-    Log in to the Dify API and retrieve an access token.
+    Log in to the Dify API and retrieve an access token or set up cookie-based auth.
 
-    :param client: An instance of httpx.AsyncClient
-    :return: Access token string
+    :param client: An instance of httpx.AsyncClient (cookies will be stored in this client)
+    :return: Access token string if available, None if using cookie-based auth
     :raises Exception: If login fails or API call fails
     """
+    global _csrf_token
     payload = {"email": EMAIL, "password": PASSWORD}
     url = f"{BASE_URL}/login"
-    response = await execute_api(client, url, payload=payload, method_type="POST")
-    if response.get("result") == "success":
-        access_token = response["data"]["access_token"]
-        print("Access token obtained successfully")
-        return access_token
-    else:
-        print(f"Login API error: {response.get('result')} - {url}")
-    raise Exception("Login failed")
+    
+    # Make the login request directly to access headers and cookies
+    async with semaphore:
+        response = await client.post(url, json=payload)
+        
+        if response.status_code == 200:
+            response_data = response.json() if response.content else {}
+            
+            if response_data.get("result") == "success":
+                # Try to get token from response body first (not from cookies)
+                access_token = None
+                
+                logger.debug(f"Login response data: {response_data}")
+                
+                if "data" in response_data and "access_token" in response_data["data"]:
+                    access_token = response_data["data"]["access_token"]
+                    logger.info("Found access_token in response.data.access_token")
+                elif "access_token" in response_data:
+                    access_token = response_data["access_token"]
+                    logger.info("Found access_token in response.access_token")
+                else:
+                    # Check headers for token (not cookies - cookies are for session auth)
+                    auth_header = response.headers.get("Authorization")
+                    if auth_header and auth_header.startswith("Bearer "):
+                        access_token = auth_header[7:]
+                        logger.info("Found access_token in Authorization header")
+                
+                # If we have a token in the response body/header, use it
+                if access_token:
+                    print("Access token obtained successfully")
+                    logger.info(f"Using Bearer token authentication")
+                    return access_token
+                elif response.cookies:
+                    # Check if access_token is in cookies - extract it for Bearer auth
+                    cookie_access_token = response.cookies.get("access_token")
+                    if cookie_access_token:
+                        # Extract the JWT token from the cookie and use it as Bearer token
+                        print("Access token obtained from cookie - using Bearer token authentication")
+                        logger.info(f"Using access_token from cookie as Bearer token")
+                        logger.info(f"Cookies set: {list(response.cookies.keys())}")
+                        # Store CSRF token if available
+                        _csrf_token = response.cookies.get("csrf_token")
+                        if _csrf_token:
+                            logger.info("CSRF token stored for API requests")
+                        return cookie_access_token
+                    else:
+                        # Cookie-based authentication - cookies are stored in the client
+                        print("Login successful - using cookie-based authentication")
+                        logger.info(f"Cookies set: {list(response.cookies.keys())}")
+                        logger.info(f"Cookie values: {dict(response.cookies)}")
+                        return None  # Return None to indicate cookie-based auth
+                else:
+                    logger.error(f"Token not found in response body or headers, and no cookies set")
+                    logger.error(f"Response body: {response_data}")
+                    logger.error(f"Response headers: {dict(response.headers)}")
+                    logger.error(f"Response cookies: {dict(response.cookies)}")
+                    raise Exception(f"Login response missing access_token and cookies. Response: {response_data}")
+            else:
+                logger.error(f"Login API error: {response_data.get('result')} - {url}")
+                logger.error(f"Full response: {response_data}")
+                raise Exception(f"Login failed. Response: {response_data}")
+        else:
+            logger.error(f"Login request failed with status {response.status_code}")
+            raise Exception(f"Login failed with status {response.status_code}")
 
 
 async def fetch_app_per_page(
-    access_token: str, page: int, limit: int, client: httpx.AsyncClient
+    access_token: str | None, page: int, limit: int, client: httpx.AsyncClient
 ) -> dict:
     """
     Fetch a single page of app data from the Dify API.
@@ -108,7 +173,7 @@ async def fetch_app_per_page(
     )
 
 
-async def get_app_list(access_token: str, client: httpx.AsyncClient) -> tuple[list, int]:
+async def get_app_list(access_token: str | None, client: httpx.AsyncClient) -> tuple[list, int]:
     """
     Retrieve all apps available to the authenticated user.
 
@@ -161,7 +226,7 @@ async def delete_app(access_token: str, app: dict, client: httpx.AsyncClient):
         print(f"❌ Failed to delete {app['name']} (ID: {app['id']}): {e}")
 
 
-async def export_app(access_token: str, app_id: str, client: httpx.AsyncClient) -> bytes:
+async def export_app(access_token: str | None, app_id: str, client: httpx.AsyncClient) -> bytes:
     """
     Export the app's DSL data as a bytes.
 
@@ -173,7 +238,19 @@ async def export_app(access_token: str, app_id: str, client: httpx.AsyncClient) 
     """
     url = f"{BASE_URL}/apps/{app_id}/export?include_secret=true"
     response = await execute_api(client, url, access_token, method_type="GET")
-    return response.get("data").encode("utf-8")
+    
+    # Handle different possible response structures
+    if "data" in response:
+        dsl_content = response["data"]
+    elif isinstance(response, str):
+        dsl_content = response
+    else:
+        logger.error(f"Unexpected export response structure: {response}")
+        raise Exception(f"Export response missing data. Response: {response}")
+    
+    if isinstance(dsl_content, str):
+        return dsl_content.encode("utf-8")
+    return dsl_content
 
 
 async def import_app(access_token: str, yaml_content: str, client: httpx.AsyncClient) -> dict:

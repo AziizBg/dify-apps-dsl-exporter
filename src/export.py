@@ -18,7 +18,7 @@ def create_dsl_folder():
     os.makedirs(DSL_FOLDER_PATH)
 
 
-async def download_yml_files(access_token: str, apps: list, client: httpx.AsyncClient):
+async def download_yml_files(access_token: str | None, apps: list, client: httpx.AsyncClient):
     """
     Download YML configuration files for each app concurrently.
 
@@ -31,7 +31,7 @@ async def download_yml_files(access_token: str, apps: list, client: httpx.AsyncC
     await asyncio.gather(*tasks)  # Run all download tasks concurrently
 
 
-async def download_yml_file(access_token: str, app: dict, client: httpx.AsyncClient) -> None:
+async def download_yml_file(access_token: str | None, app: dict, client: httpx.AsyncClient) -> None:
     """
     Download the YML configuration file for a single app and save it locally.
 
@@ -87,36 +87,32 @@ async def main():
     Main routine to export all apps as YML files.
 
     Steps:
-    1. Authenticate and get an access token
+    1. Authenticate and get an access token (or use cookie-based auth)
     2. Fetch all apps
     3. Resolve name conflicts
     4. Download YML for each app into the local folder
     """
+    # Use a single client instance to maintain cookies across requests
     async with httpx.AsyncClient() as client:
-        # 1. Get access token
+        # 1. Get access token (or None if using cookie-based auth)
         access_token = await dify_api.login_and_get_token(client)
-    if not access_token:
-        print("Failed to obtain access token.")
-        return
-
-    async with httpx.AsyncClient() as client:
-        # 2. Get the list of apps
+        
+        # 2. Get the list of apps (using same client to maintain cookies)
         apps, app_num = await dify_api.get_app_list(access_token, client)
 
-    # 3. Check download feasibility
-    if not apps:
-        print("❌ No apps found.")
-        return
-    if len(apps) != app_num:
-        print("❌ Mismatch in the number of apps.")
-        return
+        # 3. Check download feasibility
+        if not apps:
+            print("❌ No apps found.")
+            return
+        if len(apps) != app_num:
+            print("❌ Mismatch in the number of apps.")
+            return
 
-    # 4. Check unique app name
-    unique_apps, same_app_names = make_unique_app_names(apps)
-    print(f"Same name app count: {len(apps) - len(unique_apps)}, renamed list: {same_app_names}")
+        # 4. Check unique app name
+        unique_apps, same_app_names = make_unique_app_names(apps)
+        print(f"Same name app count: {len(apps) - len(unique_apps)}, renamed list: {same_app_names}")
 
-    async with httpx.AsyncClient() as client:
-        # 5. Download YML files for all apps concurrently
+        # 5. Download YML files for all apps concurrently (using same client)
         print("Starting to download YML files...")
         await download_yml_files(access_token, unique_apps, client)
 
