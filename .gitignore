@@ -173,5 +173,8 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-# dsl files
+# local exported workflow folders
 dsl/
+dify-pelonis-workflows/
+dify-vipplay-workflows/
+*.pdf

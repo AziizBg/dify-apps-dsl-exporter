@@ -6,7 +6,7 @@ import httpx
 
 import dify_api
 
-DSL_FOLDER_PATH = "./dsl"
+DSL_FOLDER_PATH = os.getenv("DSL_FOLDER_PATH", "./dsl")
 
 
 def create_dsl_folder():
@@ -110,7 +110,7 @@ async def main():
 
         # 4. Check unique app name
         unique_apps, same_app_names = make_unique_app_names(apps)
-        print(f"Same name app count: {len(apps) - len(unique_apps)}, renamed list: {same_app_names}")
+        print(f"Same name app count: {len(same_app_names)}, renamed list: {same_app_names}")
 
         # 5. Download YML files for all apps concurrently (using same client)
         print("Starting to download YML files...")

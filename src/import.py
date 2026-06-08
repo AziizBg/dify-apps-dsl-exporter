@@ -1,12 +1,13 @@
 import asyncio
 import glob
 import os
+import sys
 
 import httpx
 
 import dify_api
 
-DSL_FOLDER_PATH = "./dsl"
+DSL_FOLDER_PATH = os.getenv("DSL_FOLDER_PATH", "./dsl")
 
 
 def get_dsl_files() -> list[str]:
@@ -17,12 +18,12 @@ def get_dsl_files() -> list[str]:
     """
     yml_files = glob.glob(f"{DSL_FOLDER_PATH}/*.yml")
     if not yml_files:
-        print("No YML files found in ./dsl")
+        print(f"No YML files found in {DSL_FOLDER_PATH}")
         return []
     return yml_files
 
 
-async def upload_yml_files(access_token: str, yml_files: list[str], client: httpx.AsyncClient):
+async def upload_yml_files(access_token: str | None, yml_files: list[str], client: httpx.AsyncClient):
     """
     Upload multiple YML files to the Dify API concurrently.
 
@@ -37,7 +38,7 @@ async def upload_yml_files(access_token: str, yml_files: list[str], client: http
     await asyncio.gather(*tasks)
 
 
-async def upload_yml_file(access_token: str, file_path: str, client: httpx.AsyncClient):
+async def upload_yml_file(access_token: str | None, file_path: str, client: httpx.AsyncClient):
     """
     Upload a single YML file to the Dify API.
 
@@ -58,23 +59,55 @@ async def upload_yml_file(access_token: str, file_path: str, client: httpx.Async
 
     response = await dify_api.import_app(access_token, yaml_content, client)
     app_name = os.path.basename(file_path)
-    if response.get("status") == "completed":
-        print(f"✅ Imported: {app_name} -> App ID: {response.get('app_id')}")
+    
+    # Check for successful import (completed or completed-with-warnings)
+    status = response.get("status", "")
+    if status in ["completed", "completed-with-warnings"]:
+        app_id = response.get("app_id") or response.get("data", {}).get("app_id")
+        if status == "completed-with-warnings":
+            print(f"✅ Imported with warnings: {app_name} -> App ID: {app_id}")
+            if response.get("error"):
+                print(f"   Warning: {response.get('error')}")
+        else:
+            print(f"✅ Imported: {app_name} -> App ID: {app_id}")
+    elif response.get("result") == "success":
+        # Response might have result field
+        app_id = response.get("app_id") or response.get("data", {}).get("app_id")
+        print(f"✅ Imported: {app_name} -> App ID: {app_id}")
     else:
-        print(f"❌ Failed to import: {app_name} -> Error: {response.get('error', 'Unknown error')}")
+        # Print full response for debugging
+        error_msg = response.get("error") or response.get("message") or "Unknown error"
+        print(f"❌ Failed to import: {app_name}")
+        print(f"   Status: {status}")
+        if error_msg and error_msg != "":
+            print(f"   Error: {error_msg}")
+        else:
+            print(f"   Full response: {response}")
 
 
 async def main():
-    async with httpx.AsyncClient() as client:
-        access_token = await dify_api.login_and_get_token(client)
-
-    yml_files = get_dsl_files()
-    if not yml_files:
-        print("No YML files found to upload.")
-        return
-
-    async with httpx.AsyncClient() as client:
-        await upload_yml_files(access_token, yml_files, client)
+    # Check if a specific file was provided as command line argument
+    if len(sys.argv) > 1:
+        file_path = sys.argv[1]
+        if not os.path.exists(file_path):
+            print(f"❌ File not found: {file_path}")
+            return
+        
+        # Use a single client instance to maintain cookies
+        async with httpx.AsyncClient() as client:
+            access_token = await dify_api.login_and_get_token(client)
+            await upload_yml_file(access_token, file_path, client)
+    else:
+        # Import all files from dsl folder
+        async with httpx.AsyncClient() as client:
+            access_token = await dify_api.login_and_get_token(client)
+            
+            yml_files = get_dsl_files()
+            if not yml_files:
+                print("No YML files found to upload.")
+                return
+            
+            await upload_yml_files(access_token, yml_files, client)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Dify Workflows DSL Exporter
 
-A Python tool to quickly export all your Dify workflows/applications as DSL (Domain-Specific Language) YAML files via the Dify API. This tool allows you to backup, version control, and migrate your Dify workflows efficiently.
+A Python tool to export and import Dify workflows/apps as DSL (Domain-Specific Language) YAML files via the Dify console API. This helps teams back up, version control, and migrate workflows between Dify instances they can access.
 
 ## Quick Reference
 
@@ -18,8 +18,11 @@ poetry install
 cp .env.example .env
 # Edit .env with your Dify credentials
 
-# 4. Export all workflows
+# 4. Download/export all workflows from the configured Dify instance
 poetry run python src/export.py
+
+# 5. Upload/import all workflows from ./dsl into the configured Dify instance
+poetry run python src/import.py
 ```
 
 **Output**: All workflows are saved as YAML files in `./dsl/` directory.
@@ -27,15 +30,17 @@ poetry run python src/export.py
 ## Features
 
 - ✅ **Bulk Export**: Export all workflows from your Dify instance in one command
+- ✅ **Bulk Import**: Import exported workflow YAML files into another Dify instance
 - ✅ **Fast & Concurrent**: Uses async requests for fast downloads
 - ✅ **Automatic Naming**: Files are named after your workflow titles
 - ✅ **Duplicate Handling**: Automatically handles workflows with duplicate names
 - ✅ **Cookie-based Auth**: Supports Dify's cookie-based authentication
+- ✅ **Safe Secret Defaults**: Workflow secrets are not exported unless explicitly enabled
 - ✅ **Error Handling**: Retries failed requests automatically
 
 ## Requirements
 
-- **Python 3.13+** (or Python 3.10+)
+- **Python 3.10+**
 - **Poetry** (for dependency management)
 
 ## Quick Start
@@ -72,17 +77,21 @@ cp .env.example .env
 Edit `.env` with your Dify instance details:
 
 ```env
-DIFY_ORIGIN=https://dify.dctrl.ai  # Your Dify instance URL (no trailing slash)
-EMAIL=your-email@example.com        # Your Dify login email
-PASSWORD=your-password              # Your Dify login password
+DIFY_ORIGIN=https://dify.example.com
+EMAIL=your-email@example.com
+PASSWORD=your-password
+DSL_FOLDER_PATH=./dsl
+DIFY_INCLUDE_SECRET=false
 ```
 
 **Important Notes:**
 - Remove any trailing slashes from `DIFY_ORIGIN` (e.g., use `https://dify.dctrl.ai` not `https://dify.dctrl.ai/`)
 - For self-hosted instances, use your full URL (e.g., `http://localhost:3000`)
 - For cloud instances, use the full domain (e.g., `https://api.dify.ai`)
+- Keep `DIFY_INCLUDE_SECRET=false` for normal team sharing. Set it to `true` only if you intentionally need exported secret values in the YAML files.
+- The tool uses Dify's `/console/api` email/password login flow. Instances that require SSO, MFA-only login, or a different auth flow may need code changes.
 
-### 4. Export All Workflows
+### 4. Download / Export All Workflows
 
 ```bash
 # Make sure Poetry is in your PATH
@@ -96,7 +105,7 @@ The script will:
 1. Authenticate with your Dify instance
 2. Fetch all your workflows/applications
 3. Download each workflow's DSL file as YAML
-4. Save them to the `./dsl` folder
+4. Save them to `DSL_FOLDER_PATH` (`./dsl` by default)
 
 **Example Output:**
 ```
@@ -127,19 +136,40 @@ dsl/
 
 ## Additional Features
 
-### Import Workflows
+### Import / Upload Workflows
 
-To import workflows from the `./dsl/` folder back into Dify:
+To import all workflows from `DSL_FOLDER_PATH` (`./dsl` by default) into the configured Dify instance:
 
 ```bash
 poetry run python src/import.py
 ```
 
-### Delete All Workflows
-
-⚠️ **Warning**: This will delete all workflows from your Dify instance!
+To import one workflow file:
 
 ```bash
+poetry run python src/import.py ./dsl/my-workflow.yml
+```
+
+### Moving Workflows Between Dify Instances
+
+1. Configure `.env` for the source Dify instance.
+2. Run `poetry run python src/export.py`.
+3. Review the YAML files from `DSL_FOLDER_PATH` and redact/rotate secrets before sharing.
+4. Update `.env` for the target Dify instance.
+5. Run `poetry run python src/import.py`.
+
+### Delete Workflows
+
+To delete a single workflow by its app ID (no bulk confirmation needed):
+
+```bash
+poetry run python src/delete.py <app_id>
+```
+
+⚠️ **Warning**: Running with no arguments deletes all workflows from your Dify instance. It is intentionally blocked unless you provide an explicit confirmation environment variable.
+
+```bash
+CONFIRM_DELETE_ALL=DELETE_ALL_WORKFLOWS \
 poetry run python src/delete.py
 ```
 
@@ -195,7 +225,7 @@ dify-apps-dsl-exporter/
 │   ├── import.py      # Import workflows script
 │   ├── delete.py      # Delete workflows script
 │   └── dify_api.py    # Dify API client
-├── dsl/               # Exported workflow files (created after export)
+├── dsl/               # Exported workflow files (created after export by default)
 ├── .env               # Your credentials (create from .env.example)
 ├── .env.example       # Example configuration file
 ├── pyproject.toml     # Poetry dependencies
@@ -205,6 +235,9 @@ dify-apps-dsl-exporter/
 ## Security Notes
 
 - **Never commit `.env`**: The `.env` file contains your credentials and should be in `.gitignore`
+- **Secrets are excluded by default**: `DIFY_INCLUDE_SECRET=false` avoids exporting workflow secret values
+- **Review YAML before sharing**: If you ever export with `DIFY_INCLUDE_SECRET=true`, rotate or remove secrets before sharing
+- **Generated folders are ignored by default**: `dsl/` is ignored to avoid accidental commits. Share or version workflow YAML only after reviewing/redacting it.
 - **Keep credentials secure**: Share credentials only through secure channels
 - **Use environment variables**: For CI/CD, consider using environment variables instead of `.env` files
 
@@ -231,14 +264,20 @@ To share this tool with your team:
    poetry install
    cp .env.example .env
    # Edit .env with their credentials
+
+   # Download workflows from the configured instance
    poetry run python src/export.py
+
+   # Upload workflows from DSL_FOLDER_PATH to the configured instance
+   poetry run python src/import.py
    ```
 
 ### Team Workflow
 
-1. **Export workflows** regularly to backup your work
-2. **Version control the DSL files**: Commit the `dsl/` folder to git for version history
-3. **Share workflows**: Team members can import workflows from the `dsl/` folder
+1. **Export workflows** from the source Dify instance.
+2. **Review the YAML files** before sharing, especially if secrets were intentionally included.
+3. **Version control reviewed DSL files intentionally** if you want history and review; do not commit raw exports blindly.
+4. **Import workflows** into the target Dify instance using each team member's own `.env`.
 
 ## Support
 

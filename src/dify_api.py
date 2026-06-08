@@ -14,6 +14,7 @@ DIFY_ORIGIN = os.getenv("DIFY_ORIGIN", "http://localhost").rstrip("/")
 BASE_URL = f"{DIFY_ORIGIN}/console/api"
 EMAIL = os.getenv("EMAIL")
 PASSWORD = os.getenv("PASSWORD")
+INCLUDE_SECRET = os.getenv("DIFY_INCLUDE_SECRET", "false").lower() in {"1", "true", "yes"}
 logger.info(f"Using Dify API at {BASE_URL} with email {EMAIL}")
 
 MAX_CONCURRENT_TASKS = 3
@@ -53,15 +54,14 @@ async def execute_api(
         headers["X-CSRF-Token"] = _csrf_token
     async with semaphore:
         for attempt in range(retries):
-            match method_type:
-                case "POST":
-                    response = await client.post(url, headers=headers, params=params, json=payload)
-                case "GET":
-                    response = await client.get(url, headers=headers, params=params)
-                case "DELETE":
-                    response = await client.delete(url, headers=headers)
-                case _:
-                    raise ValueError("Invalid method type")
+            if method_type == "POST":
+                response = await client.post(url, headers=headers, params=params, json=payload)
+            elif method_type == "GET":
+                response = await client.get(url, headers=headers, params=params)
+            elif method_type == "DELETE":
+                response = await client.delete(url, headers=headers)
+            else:
+                raise ValueError("Invalid method type")
 
             if response.status_code == 200:
                 return response.json() if response.content else {}
@@ -236,7 +236,8 @@ async def export_app(access_token: str | None, app_id: str, client: httpx.AsyncC
     :return: App DSL data as bytes
     :raises Exception: If the API call fails
     """
-    url = f"{BASE_URL}/apps/{app_id}/export?include_secret=true"
+    include_secret = "true" if INCLUDE_SECRET else "false"
+    url = f"{BASE_URL}/apps/{app_id}/export?include_secret={include_secret}"
     response = await execute_api(client, url, access_token, method_type="GET")
     
     # Handle different possible response structures
@@ -253,7 +254,7 @@ async def export_app(access_token: str | None, app_id: str, client: httpx.AsyncC
     return dsl_content
 
 
-async def import_app(access_token: str, yaml_content: str, client: httpx.AsyncClient) -> dict:
+async def import_app(access_token: str | None, yaml_content: str, client: httpx.AsyncClient) -> dict:
     """
     Import an app using YAML content.
     :param access_token: Access token for authentication
