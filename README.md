@@ -228,9 +228,14 @@ poetry run python src/sync_tracker.py --dry-run
 ### Pruning workflows marked "Delete"
 
 `src/prune_deleted.py` deletes every workflow whose `Decision` column on the tracker is
-`Delete` (and that still exists in Dify), then flags those rows red `Removed from Dify`
-on the page and posts a Slack deletion notice. Deletion is permanent, so it is gated
-behind an explicit flag.
+`Delete` (and that still exists in Dify), moves each deleted workflow's exported YAML
+into a trashcan folder, then flags those rows red `Removed from Dify` on the page and
+posts a Slack deletion notice. Deletion is permanent, so it is gated behind an explicit
+flag.
+
+The trashcan folder defaults to a sibling of `DSL_FOLDER_PATH` (e.g.
+`./dify-pelonis-workflows` → `./dify-pelonis-trashcan`); override it with
+`DSL_TRASHCAN_PATH`. It is git-ignored like the export folders.
 
 ```bash
 ./run.sh prune            # list candidates only (safe, no deletion)

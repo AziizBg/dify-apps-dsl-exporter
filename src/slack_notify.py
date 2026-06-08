@@ -198,10 +198,18 @@ def build_deletion_messages(deleted: list[dict], failed: list[dict], page_url: s
             f"(marked *Delete* in the tracker)."
         )
     ]
+    if deleted:
+        intro.append(
+            _section(
+                ":floppy_disk: A YAML backup of each deleted workflow is kept locally "
+                "on Aziz's machine (the `dify-pelonis-trashcan` folder)."
+            )
+        )
     sections: list[dict] = []
     if deleted:
         listed = deleted[:MAX_PER_AUTHOR * 2]
-        lines = [f"- <{w['url']}|{w['name']}>" for w in listed]
+        # No links: the workflows are gone from Dify, so their URLs no longer resolve.
+        lines = [f"- {w['name']}" for w in listed]
         remaining = len(deleted) - len(listed)
         if remaining > 0:
             lines.append(f"_...and {remaining} more_")

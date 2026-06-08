@@ -1,9 +1,11 @@
 """Delete every workflow marked "Delete" in the Confluence tracker, then notify Slack.
 
 Reads the tracker page, finds rows whose Decision column is "Delete" and that still
-exist in Dify, deletes them from Dify, and posts a Slack message listing what was
-removed. Deletion is destructive, so it is gated behind an explicit --yes flag (or
-CONFIRM_PRUNE=DELETE_MARKED). Without it, the script only lists the candidates.
+exist in Dify, deletes them from Dify, moves each deleted workflow's exported YAML into
+a trashcan folder (DSL_TRASHCAN_PATH, default a sibling "...-trashcan" of the DSL
+folder), and posts a Slack message listing what was removed. Deletion is destructive, so
+it is gated behind an explicit --yes flag (or CONFIRM_PRUNE=DELETE_MARKED). Without it,
+the script only lists the candidates.
 
 After pruning, run `./run.sh sync` so the page flags the removed rows in red and the
 status/Slack counts refresh.
@@ -17,6 +19,7 @@ Usage:
 import argparse
 import asyncio
 import os
+import shutil
 from datetime import datetime, timezone
 
 import httpx
@@ -27,6 +30,56 @@ import slack_notify
 import sync_tracker
 
 DELETE_DECISION = "delete"
+
+DSL_FOLDER_PATH = os.getenv("DSL_FOLDER_PATH", "./dsl")
+
+
+def _default_trashcan(dsl_path: str) -> str:
+    """Derive a trashcan folder next to the DSL folder (e.g. ...-workflows -> ...-trashcan)."""
+    base = dsl_path.rstrip("/")
+    if base.endswith("workflows"):
+        return base[: -len("workflows")] + "trashcan"
+    return base + "-trashcan"
+
+
+TRASHCAN_FOLDER_PATH = os.getenv("DSL_TRASHCAN_PATH") or _default_trashcan(DSL_FOLDER_PATH)
+
+
+def _yaml_candidates(row: dict) -> list[str]:
+    """Possible exported file names for a workflow (mirrors export.py naming)."""
+    safe = row.get("name", "").replace("/", "-")
+    candidates = [f"{safe}.yml"]
+    app_id = row.get("app_id") or ""
+    if app_id:
+        # export.py renames same-named duplicates to 【same】<name>-<id-prefix>.
+        candidates.append(f"【same】{safe}-{app_id.split('-')[0]}.yml")
+    return candidates
+
+
+def trash_workflow_files(rows: list[dict]) -> tuple[list[str], list[str]]:
+    """Move each deleted workflow's exported YAML into the trashcan folder.
+
+    Returns (moved_filenames, names_without_a_local_file).
+    """
+    moved: list[str] = []
+    missing: list[str] = []
+    for row in rows:
+        src = next(
+            (
+                os.path.join(DSL_FOLDER_PATH, cand)
+                for cand in _yaml_candidates(row)
+                if os.path.isfile(os.path.join(DSL_FOLDER_PATH, cand))
+            ),
+            None,
+        )
+        if src is None:
+            missing.append(row.get("name", "?"))
+            continue
+        os.makedirs(TRASHCAN_FOLDER_PATH, exist_ok=True)
+        dest = os.path.join(TRASHCAN_FOLDER_PATH, os.path.basename(src))
+        shutil.move(src, dest)
+        moved.append(os.path.basename(src))
+    return moved, missing
 
 
 def find_delete_marked(storage: str, dify_ids: set[str]) -> list[dict]:
@@ -85,6 +138,14 @@ def run(confirm: bool = False, notify: bool = True) -> dict:
     print(f"\nDeleting {len(targets)} workflow(s) from Dify...")
     deleted, failed = asyncio.run(_delete_targets(targets))
     print(f"  Deleted: {len(deleted)}, Failed: {len(failed)}")
+
+    # Archive the exported YAML for each deleted workflow into the trashcan folder.
+    if deleted:
+        print(f"Archiving exported YAML to {TRASHCAN_FOLDER_PATH}...")
+        moved, missing = trash_workflow_files(deleted)
+        print(f"  Moved {len(moved)} file(s).")
+        if missing:
+            print(f"  No exported file found for: {', '.join(missing)}")
 
     # Flag the deleted rows on the tracker ("Removed from Dify") by re-syncing
     # against the now-shorter Dify app list.
