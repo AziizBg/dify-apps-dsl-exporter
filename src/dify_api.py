@@ -209,6 +209,50 @@ async def get_app_list(access_token: str | None, client: httpx.AsyncClient) -> t
     return app_list, app_num
 
 
+async def get_app_details(access_token: str | None, client: httpx.AsyncClient) -> list[dict]:
+    """
+    Retrieve all apps with the metadata needed for the workflow tracker.
+
+    :param access_token: Access token for authentication
+    :param client: An instance of httpx.AsyncClient
+    :return: List of dicts with id, name, author, created_at, updated_at, tags
+    """
+    apps: list[dict] = []
+    page = 1
+    limit = 30
+    total = 0
+    max_page_num = 0
+    while True:
+        content = await fetch_app_per_page(access_token, page, limit, client)
+
+        if page == 1:
+            total = content.get("total", 0)
+            max_page_num = total // limit + (total % limit > 0)
+
+        if total == 0:
+            return []
+
+        for app in content.get("data", []):
+            tags = app.get("tags") or []
+            tag_names = ", ".join(t.get("name", "") for t in tags if t.get("name"))
+            apps.append(
+                {
+                    "id": app.get("id"),
+                    "name": app.get("name"),
+                    "author": app.get("author_name") or "",
+                    "created_at": app.get("created_at"),
+                    "updated_at": app.get("updated_at"),
+                    "tags": tag_names,
+                }
+            )
+
+        if page >= max_page_num:
+            break
+        page += 1
+
+    return apps
+
+
 async def delete_app(access_token: str, app: dict, client: httpx.AsyncClient):
     """
     Delete a single app using its ID.

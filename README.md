@@ -173,6 +173,83 @@ CONFIRM_DELETE_ALL=DELETE_ALL_WORKFLOWS \
 poetry run python src/delete.py
 ```
 
+## Confluence Tracker Sync + Slack Notification
+
+`src/sync_tracker.py` keeps a Confluence "workflow tracker" page in sync with the
+live Dify instance, then posts a status summary to Slack. It is designed to run
+unattended on a schedule (see GitHub Actions below), but you can also run it manually.
+
+What it does on each run:
+
+1. Logs in to Dify and fetches every app with its metadata (author, created/updated dates, tags).
+2. Reads the current Confluence tracker page (REST API, storage format).
+3. Merges by **App ID**:
+   - **Existing rows are preserved verbatim** so human-curated columns
+     (`Working ?`, `Decision`, `Notes`, `Author & contributor(s)`, `Tags`) are never overwritten.
+   - **New workflows** not yet on the page are appended with `Informations added ? = FALSE`
+     and metadata pulled from Dify.
+   - **Workflows removed from Dify** keep their row but get a red `Removed from Dify` status (history is preserved).
+4. Writes the rebuilt page back (version + 1).
+5. Posts Slack messages (grouped by contributor so each person sees their own):
+   - **Weekly status** + workflows still **pending information input** (`Informations added ?` is not `TRUE`).
+   - **Missing environment tag** - workflows whose `Tags` lack at least one of `prod` / `dev` / `test`.
+
+   The two categories are sent as separate messages, and if a category is large its
+   per-contributor sections are automatically chunked across additional messages to
+   stay within Slack's 50-block-per-message limit.
+
+### One-time setup
+
+Add the following to `.env` (local runs) and as **GitHub Actions repository secrets** (scheduled runs):
+
+| Variable | Notes |
+| --- | --- |
+| `CONFLUENCE_BASE_URL` | e.g. `https://1dev.atlassian.net/wiki` (include `/wiki`) |
+| `CONFLUENCE_EMAIL` | Atlassian account email that owns the API token |
+| `CONFLUENCE_API_TOKEN` | Create at https://id.atlassian.com/manage-profile/security/api-tokens |
+| `CONFLUENCE_PAGE_ID` | Numeric id of the tracker page (e.g. `407797761`) |
+| `SLACK_WEBHOOK_URL` | A Slack incoming webhook URL for the target channel |
+
+For the GitHub Action the Dify credentials are read from secrets named
+`DIFY_ORIGIN`, `DIFY_EMAIL`, and `DIFY_PASSWORD`.
+
+### Run it manually
+
+```bash
+# venv runner (installs: httpx python-dotenv beautifulsoup4)
+./run.sh sync              # update Confluence + post to Slack
+./run.sh sync --dry-run    # compute and print only; change nothing
+./run.sh sync --no-slack   # update Confluence but skip Slack
+
+# or with Poetry
+poetry run python src/sync_tracker.py --dry-run
+```
+
+### Pruning workflows marked "Delete"
+
+`src/prune_deleted.py` deletes every workflow whose `Decision` column on the tracker is
+`Delete` (and that still exists in Dify), then flags those rows red `Removed from Dify`
+on the page and posts a Slack deletion notice. Deletion is permanent, so it is gated
+behind an explicit flag.
+
+```bash
+./run.sh prune            # list candidates only (safe, no deletion)
+./run.sh prune --yes      # delete + flag Confluence + notify Slack
+./run.sh prune --yes --no-slack
+```
+
+This is intentionally a manual step and is NOT part of the weekly schedule.
+
+### Scheduled runs (GitHub Actions)
+
+`.github/workflows/sync-tracker.yml` runs the sync **weekly (Mondays 08:00 UTC)** and
+exposes a manual **Run workflow** button (with `dry_run` / `no_slack` toggles). After adding
+the secrets above, no further setup is required.
+
+> If your Dify host is only reachable on a private network, GitHub-hosted runners will not
+> reach it. In that case run `./run.sh sync` from a machine on that network via `cron`
+> (e.g. `0 8 * * 1 /path/to/dify-apps-dsl-exporter/run.sh sync`) or a self-hosted runner.
+
 ## Troubleshooting
 
 ### Poetry Command Not Found
@@ -221,15 +298,22 @@ source ~/.zshrc
 ```
 dify-apps-dsl-exporter/
 ├── src/
-│   ├── export.py      # Main export script
-│   ├── import.py      # Import workflows script
-│   ├── delete.py      # Delete workflows script
-│   └── dify_api.py    # Dify API client
-├── dsl/               # Exported workflow files (created after export by default)
-├── .env               # Your credentials (create from .env.example)
-├── .env.example       # Example configuration file
-├── pyproject.toml     # Poetry dependencies
-└── README.md          # This file
+│   ├── export.py        # Main export script
+│   ├── import.py        # Import workflows script
+│   ├── delete.py        # Delete workflows script
+│   ├── dify_api.py      # Dify API client
+│   ├── confluence.py    # Confluence REST v2 client + storage helpers
+│   ├── slack_notify.py  # Slack incoming-webhook status message
+│   ├── sync_tracker.py  # Weekly Confluence sync + Slack notification
+│   └── prune_deleted.py # Delete tracker "Delete"-marked workflows + notify
+├── .github/workflows/
+│   └── sync-tracker.yml # Scheduled (weekly) + manual tracker sync
+├── run.sh               # Convenience runner (export|import|delete|sync)
+├── dsl/                 # Exported workflow files (created after export by default)
+├── .env                 # Your credentials (create from .env.example)
+├── .env.example         # Example configuration file
+├── pyproject.toml       # Poetry dependencies
+└── README.md            # This file
 ```
 
 ## Security Notes
