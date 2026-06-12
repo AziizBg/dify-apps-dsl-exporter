@@ -2,8 +2,8 @@ name: Sync Dify workflow tracker
 
 on:
   schedule:
-    # Weekly, Mondays at 08:00 UTC.
-    - cron: "0 8 * * 1"
+    # Daily at 08:00 UTC.
+    - cron: "0 8 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -15,9 +15,16 @@ on:
         type: boolean
         default: false
 
+# Never let two syncs run at once (they write the same Confluence page).
+concurrency:
+  group: sync-tracker
+  cancel-in-progress: false
+
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    # Self-hosted runner on our network: it can reach Dify over the VPN/Tailnet,
+    # which GitHub-hosted runners cannot.
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
